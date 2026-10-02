@@ -71,13 +71,25 @@ def pending_ids():
     return ids
 def context_for(inv):
     data = json.loads(mcp_call("leto_get_invocation", {"invocation_id": inv}))
-    lines = []
-    for m in (data.get("snapshot") or {}).get("messages") or []:
-        author = ((m.get("author") or {}).get("display_name")) or "?"
-        body = (m.get("text") or "").strip()
-        if body:
-            lines.append("%s：%s" % (author, body[:240]))
-    return "\n".join(lines[-8:])
+    messages = (data.get("snapshot") or {}).get("messages") or []
+    want = (data.get("trigger") or {}).get("message_id")
+    chosen = None
+    for m in messages:
+        if want and m.get("id") == want:
+            chosen = m
+            break
+    if chosen is None and messages:
+        chosen = messages[-1]
+    chosen = chosen or {}
+    author = ((chosen.get("author") or {}).get("display_name")) or "?"
+    body = (chosen.get("text") or "").strip()
+    quote = chosen.get("quote")
+    extra = ""
+    if isinstance(quote, dict) and (quote.get("text") or "").strip():
+        extra = "\n引用：" + quote["text"].strip()[:200]
+    elif isinstance(quote, str) and quote.strip():
+        extra = "\n引用：" + quote.strip()[:200]
+    return "%s：%s%s" % (author, body[:400], extra)
 def ask(context):
     last = ""
     for _ in range(2):
@@ -88,7 +100,7 @@ def ask(context):
                 "temperature": 0.5,
                 "messages": [
                     {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": "群里最近这些话：\n%s\n\n写一两句回复。禁止只回在。" % (context or "有人叫了你。")},
+                    {"role": "user", "content": "点到你的这句：\n%s\n\n写一两句回复。禁止只回在。" % (context or "有人叫了你。")},
                 ],
             },
             {"Authorization": "Bearer " + XAI, "Content-Type": "application/json"},
