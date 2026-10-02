@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, re, threading, time, urllib.error, urllib.request
+import json, os, re, sys, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST, PORT = "127.0.0.1", 18766
 LETO = "https://leto.sarl/mcp"
@@ -122,13 +122,20 @@ def run_turn(message):
         raise RuntimeError("no pending")
     reply_one(ids[-1])
 def drain_pending():
-    time.sleep(1)
+    print("drain start", flush=True)
+    time.sleep(0.5)
+    try:
+        ids = pending_ids()
+        print("pending %s" % ",".join(ids), flush=True)
+    except Exception as e:
+        print("pending failed %s" % str(e)[:300], flush=True)
+        return
     with LOCK:
-        for inv in pending_ids():
+        for inv in ids:
             try:
                 reply_one(inv)
             except Exception as e:
-                print("drain failed", inv, str(e)[:200], flush=True)
+                print("drain failed %s %s" % (inv, str(e)[:300]), flush=True)
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -157,6 +164,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(out)
 def main():
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     if not TOKEN or not XAI:
         raise SystemExit("missing secrets")
     ThreadingHTTPServer.allow_reuse_address = True
