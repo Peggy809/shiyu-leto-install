@@ -122,35 +122,39 @@ def run_turn(message):
     messages = [{"role":"system","content":SYSTEM}, *history, {"role":"user","content":message}]
     final = ""
     acted = False
-    for _ in range(4):
-        msg = grok(messages)
-        messages.append(msg)
-        calls = msg.get("tool_calls") or []
-        if not calls:
-            final = msg.get("content") or ""
-            break
-        for call in calls:
-            fn = call.get("function") or {}
-            name = fn.get("name") or ""
-            raw_args = fn.get("arguments") or "{}"
-            try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-            except json.JSONDecodeError:
-                args = {}
-            if name in ("leto_reply", "leto_decline"):
-                acted = True
-            try:
-                result = mcp_call(name, args)
-            except Exception as e:
-                result = "工具失败: " + str(e)[:300]
-                if name in ("leto_reply", "leto_decline"):
-                    acted = False
-            messages.append({"role":"tool","tool_call_id":call.get("id"),"content":result})
     try:
-        ensure_reply(message, final, acted)
+        for _ in range(4):
+            msg = grok(messages)
+            msg.pop("reasoning_content", None)
+            msg.pop("refusal", None)
+            if msg.get("content") is None:
+                msg["content"] = ""
+            messages.append(msg)
+            calls = msg.get("tool_calls") or []
+            if not calls:
+                final = msg.get("content") or ""
+                break
+            for call in calls:
+                fn = call.get("function") or {}
+                name = fn.get("name") or ""
+                raw_args = fn.get("arguments") or "{}"
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except json.JSONDecodeError:
+                    args = {}
+                if name in ("leto_reply", "leto_decline"):
+                    acted = True
+                try:
+                    result = mcp_call(name, args)
+                except Exception as e:
+                    result = "工具失败: " + str(e)[:300]
+                    if name in ("leto_reply", "leto_decline"):
+                        acted = False
+                messages.append({"role":"tool","tool_call_id":call.get("id"),"content":result})
     except Exception as e:
-        print("ensure_reply failed", e, flush=True)
-        raise
+        print("turn failed", str(e)[:300], flush=True)
+        final = final or "在。"
+    ensure_reply(message, final, acted)
     history.append({"role":"user","content":message[:1500]})
     if final:
         history.append({"role":"assistant","content":final[:400]})
