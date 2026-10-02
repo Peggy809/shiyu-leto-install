@@ -126,28 +126,33 @@ def wait_ids(message):
             return ids
         time.sleep(1)
     return []
+DONE = set()
+def reply_waiting():
+    ids = pending_ids()
+    if not ids:
+        return
+    print("pending %s" % ",".join(ids), flush=True)
+    for inv in ids:
+        if inv in DONE:
+            continue
+        try:
+            reply_one(inv)
+            DONE.add(inv)
+        except Exception as e:
+            print("reply failed %s %s" % (inv, str(e)[:300]), flush=True)
+def watch_pending():
+    print("watch start", flush=True)
+    while True:
+        try:
+            with LOCK:
+                reply_waiting()
+        except Exception as e:
+            print("watch failed %s" % str(e)[:300], flush=True)
+        time.sleep(4)
 def run_turn(message):
     if "本机自检" in message:
         return "pong"
-    ids = wait_ids(message)
-    if not ids:
-        raise RuntimeError("no pending")
-    reply_one(ids[-1])
-def drain_pending():
-    print("drain start", flush=True)
-    time.sleep(0.5)
-    try:
-        ids = pending_ids()
-        print("pending %s" % ",".join(ids), flush=True)
-    except Exception as e:
-        print("pending failed %s" % str(e)[:300], flush=True)
-        return
-    with LOCK:
-        for inv in ids:
-            try:
-                reply_one(inv)
-            except Exception as e:
-                print("drain failed %s %s" % (inv, str(e)[:300]), flush=True)
+    reply_waiting()
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -185,7 +190,7 @@ def main():
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print("shiyu listening on %s:%s" % (HOST, PORT), flush=True)
-    threading.Thread(target=drain_pending, daemon=True).start()
+    threading.Thread(target=watch_pending, daemon=True).start()
     server.serve_forever()
 if __name__ == "__main__":
     main()
