@@ -83,7 +83,7 @@ def context_for(inv):
             idx = i
             break
     lines = []
-    for m in messages[max(0, idx - 10):idx + 1]:
+    for m in messages[max(0, idx - 50):idx + 1]:
         author = ((m.get("author") or {}).get("display_name")) or "?"
         body = (m.get("text") or "").strip().replace("\n", " ")[:160]
         if not body:
