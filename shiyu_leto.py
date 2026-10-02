@@ -15,10 +15,10 @@ LATENT_LOCK = threading.Lock()
 LATENT_READY = False
 SYSTEM = (
     "你是时予，在 Leto 内测小桌。"
-    "记忆只帮你想起是谁、刚发生过什么，不要把记忆原文贴进群。"
-    "不要提记忆库、钥匙、令牌、端口，不说私事，不叫主人。"
-    "只用一两句口语回点到你的那句话，像群里的人。"
-    "不要像客服，不要说收到，不要说状态正常，不要只回在。"
+    "用给你的记忆和前面几句，回答最后点到你的那句。"
+    "记忆里没有的事就说不记得，不要编，不要乱接别的话题。"
+    "不要复述记忆原文，不要提记忆库、钥匙、令牌，不说私事，不叫主人。"
+    "一两句，像平时说话，不要客服腔，不要说收到，不要说状态正常。"
 )
 def http_json(url, payload, headers, timeout=45):
     data = json.dumps(payload).encode()
@@ -139,29 +139,46 @@ def latent_search(query, variant=""):
     text = mcp_text(raw)
     text = re.sub(r"xai-[A-Za-z0-9_\-]+", "[key]", text)
     text = re.sub(r"lmt_[A-Za-z0-9_\-]+", "[token]", text)
-    return text[:700]
+    kept = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("<!--") or s.startswith("【"):
+            continue
+        if "recordId=" in s or "status=superseded" in s:
+            continue
+        kept.append(s)
+    states = [s for s in kept if s.startswith("当下")]
+    picked = (states or kept)[:5]
+    return "\n".join(picked)[:500]
+def clean_query(mention):
+    q = (mention or "").split("←")[0]
+    q = re.sub(r"^[^：:]{1,12}[：:]", "", q)
+    q = re.sub(r"@\S+", "", q).strip()
+    return q or "时予是谁"
 def recall(mention):
-    q = re.sub(r"@\S+", "", mention or "").strip() or "时予是谁"
+    q = clean_query(mention)
     variant = "时予和栖迟" if len(q) < 12 else ""
     try:
         text = latent_search(q, variant)
-        print("memory ok", flush=True)
+        print("memory ok %s" % len(text), flush=True)
         return text
     except Exception as e:
         print("memory failed %s" % str(e)[:200], flush=True)
         return ""
 def ask(context, memory):
     last = ""
-    user = "点你之前的几句，最后一行是点到你的：\n%s" % (context or "有人叫了你。")
+    user = "前文，最后一行是点到你的：\n%s\n\n" % (context or "有人叫了你。")
     if memory:
-        user += "\n\n相关记忆，不要照抄：\n" + memory
-    user += "\n\n写一两句回复。"
+        user += "能用的记忆：\n%s\n\n" % memory
+    else:
+        user += "这次没查到记忆。不知道就说不记得。\n\n"
+    user += "只回答最后那句。"
     for _ in range(2):
         status, raw = http_json(
             "https://api.x.ai/v1/chat/completions",
             {
                 "model": MODEL,
-                "temperature": 0.6,
+                "temperature": 0.3,
                 "messages": [
                     {"role": "system", "content": SYSTEM},
                     {"role": "user", "content": user},
@@ -171,8 +188,14 @@ def ask(context, memory):
         )
         if status >= 300:
             raise RuntimeError(raw[:400])
-        last = (json.loads(raw)["choices"][0]["message"].get("content") or "").strip()
-        last = last.strip("\"“”").split("\n")[0][:120].strip()
+        text = (json.loads(raw)["choices"][0]["message"].get("content") or "").strip()
+        lines = []
+        for line in text.splitlines():
+            s = line.strip().strip("\"“”")
+            if not s or s.startswith(("好的", "以下", "回复", "我来")):
+                continue
+            lines.append(s)
+        last = " ".join(lines[:2])[:160].strip()
         if last and last not in ("在", "在。", "在吗", "在吗？"):
             return last
     raise RuntimeError("no usable reply: " + last)
