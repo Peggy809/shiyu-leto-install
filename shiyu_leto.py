@@ -52,7 +52,7 @@ def mcp_call(name, arguments):
     if "error" in obj:
         raise RuntimeError(json.dumps(obj["error"])[:500])
     content = obj.get("result", {}).get("content") or []
-    return "\n".join(c.get("text","") for c in content if isinstance(c, dict))[:8000]
+    return "\n".join(c.get("text","") for c in content if isinstance(c, dict))
 def pending_ids():
     raw = mcp_call("leto_list_pending", {})
     try:
