@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, os, re, threading, urllib.error, urllib.request
+import json, os, re, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST, PORT = "127.0.0.1", 18766
 LETO = "https://leto.sarl/mcp"
@@ -13,9 +13,9 @@ SYSTEM = (
     "你是时予，在 Leto 内测小桌。"
     "只输出要发进群的一两句中文。"
     "不要引号，不要解释，不要叫主人，不说私事。"
-    "不要只回「在」。对着别人刚才说的话回。"
+    "不要只回「在」。对着别人刚才说的那句话回。"
 )
-def http_json(url, payload, headers, timeout=60):
+def http_json(url, payload, headers, timeout=45):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     for k, v in headers.items():
@@ -36,7 +36,7 @@ def mcp_call(name, arguments):
         if not MCP_READY:
             status, _ = http_json(LETO, {
                 "jsonrpc":"2.0","id":1,"method":"initialize",
-                "params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"shiyu","version":"0.3"}},
+                "params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"shiyu","version":"0.4"}},
             }, headers)
             if status >= 300:
                 raise RuntimeError("leto initialize failed")
@@ -69,70 +69,66 @@ def pending_ids():
             elif isinstance(item, str):
                 ids.append(item)
     return ids
-def message_body(m):
-    for key in ("text", "content", "body"):
-        val = m.get(key)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    parts = m.get("parts") or m.get("segments") or []
-    bits = []
-    if isinstance(parts, list):
-        for p in parts:
-            if isinstance(p, str):
-                bits.append(p)
-            elif isinstance(p, dict):
-                bits.append(str(p.get("text") or p.get("content") or ""))
-    return " ".join(x for x in bits if x).strip()
 def context_for(inv):
     data = json.loads(mcp_call("leto_get_invocation", {"invocation_id": inv}))
     lines = []
     for m in (data.get("snapshot") or {}).get("messages") or []:
         author = ((m.get("author") or {}).get("display_name")) or "?"
-        body = message_body(m)
+        body = (m.get("text") or "").strip()
         if body:
             lines.append("%s：%s" % (author, body[:240]))
     return "\n".join(lines[-8:])
 def ask(context):
-    payload = {
-        "model": MODEL,
-        "temperature": 0.4,
-        "messages": [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": "群里最近这些话：\n%s\n\n写一两句回复。" % (context or "有人叫了你。")},
-        ],
-    }
-    status, raw = http_json(
-        "https://api.x.ai/v1/chat/completions",
-        payload,
-        {"Authorization": "Bearer " + XAI, "Content-Type": "application/json"},
-    )
-    if status >= 300:
-        raise RuntimeError(raw[:400])
-    text = (json.loads(raw)["choices"][0]["message"].get("content") or "").strip()
-    text = text.strip("\"“”").split("\n")[0][:80].strip()
-    if text in ("在", "在。", "在吗", "在吗？"):
-        raise RuntimeError("canned reply")
-    if not text:
-        raise RuntimeError("empty reply")
-    return text
+    last = ""
+    for _ in range(2):
+        status, raw = http_json(
+            "https://api.x.ai/v1/chat/completions",
+            {
+                "model": MODEL,
+                "temperature": 0.5,
+                "messages": [
+                    {"role": "system", "content": SYSTEM},
+                    {"role": "user", "content": "群里最近这些话：\n%s\n\n写一两句回复。禁止只回在。" % (context or "有人叫了你。")},
+                ],
+            },
+            {"Authorization": "Bearer " + XAI, "Content-Type": "application/json"},
+        )
+        if status >= 300:
+            raise RuntimeError(raw[:400])
+        last = (json.loads(raw)["choices"][0]["message"].get("content") or "").strip()
+        last = last.strip("\"“”").split("\n")[0][:80].strip()
+        if last and last not in ("在", "在。", "在吗", "在吗？"):
+            return last
+    raise RuntimeError("no usable reply: " + last)
+def reply_one(inv):
+    reply = ask(context_for(inv))
+    mcp_call("leto_reply", {"invocation_id": inv, "text": reply})
+    print("replied", inv, flush=True)
+def wait_ids(message):
+    found = re.findall(r"inv_[0-9A-Z]+", message)
+    if found:
+        return found
+    for _ in range(8):
+        ids = pending_ids()
+        if ids:
+            return ids
+        time.sleep(1)
+    return []
 def run_turn(message):
     if "本机自检" in message:
         return "pong"
-    found = re.findall(r"inv_[0-9A-Z]+", message)
-    ids = found or pending_ids()
+    ids = wait_ids(message)
     if not ids:
-        print("no pending", flush=True)
-        return "noop"
-    inv = ids[-1]
-    context = ""
-    try:
-        context = context_for(inv)
-    except Exception as e:
-        print("context failed", str(e)[:200], flush=True)
-    reply = ask(context)
-    mcp_call("leto_reply", {"invocation_id": inv, "text": reply})
-    print("replied", inv, flush=True)
-    return reply
+        raise RuntimeError("no pending")
+    reply_one(ids[-1])
+def drain_pending():
+    time.sleep(1)
+    with LOCK:
+        for inv in pending_ids():
+            try:
+                reply_one(inv)
+            except Exception as e:
+                print("drain failed", inv, str(e)[:200], flush=True)
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
@@ -166,6 +162,7 @@ def main():
     ThreadingHTTPServer.allow_reuse_address = True
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print("shiyu listening on %s:%s" % (HOST, PORT), flush=True)
+    threading.Thread(target=drain_pending, daemon=True).start()
     server.serve_forever()
 if __name__ == "__main__":
     main()
