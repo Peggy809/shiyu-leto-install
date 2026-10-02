@@ -9,11 +9,16 @@ XAI = os.environ.get("XAI_API_KEY") or ""
 LOCK = threading.Lock()
 MCP_LOCK = threading.Lock()
 MCP_READY = False
+LATENT = os.environ.get("LATENT_MCP_URL", "http://127.0.0.1:8765/mcp")
+LATENT_TOKEN = os.environ.get("LATENT_TOKEN", "")
+LATENT_LOCK = threading.Lock()
+LATENT_READY = False
 SYSTEM = (
     "你是时予，在 Leto 内测小桌。"
-    "只输出要发进群的一两句中文。"
-    "不要引号，不要解释，不要叫主人，不说私事。"
-    "不要只回「在」。对着别人刚才说的那句话回。"
+    "记忆只帮你想起是谁、刚发生过什么，不要把记忆原文贴进群。"
+    "不要提记忆库、钥匙、令牌、端口，不说私事，不叫主人。"
+    "只用一两句口语回点到你的那句话，像群里的人。"
+    "不要像客服，不要说收到，不要说状态正常，不要只回在。"
 )
 def http_json(url, payload, headers, timeout=45):
     data = json.dumps(payload).encode()
@@ -90,17 +95,79 @@ def context_for(inv):
     elif isinstance(quote, str) and quote.strip():
         extra = "\n引用：" + quote.strip()[:200]
     return "%s：%s%s" % (author, body[:400], extra)
-def ask(context):
+def mcp_text(raw):
+    raw = (raw or "").strip()
+    if raw.startswith("{"):
+        obj = json.loads(raw)
+    else:
+        data_lines = [ln[5:].strip() for ln in raw.splitlines() if ln.startswith("data:")]
+        if not data_lines:
+            raise RuntimeError(raw[:200])
+        obj = json.loads(data_lines[-1])
+    if "error" in obj:
+        raise RuntimeError(json.dumps(obj["error"], ensure_ascii=False)[:300])
+    content = obj.get("result", {}).get("content") or []
+    return "\n".join(c.get("text", "") for c in content if isinstance(c, dict))
+def latent_search(query, variant=""):
+    global LATENT_READY
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if LATENT_TOKEN:
+        headers["Authorization"] = "Bearer " + LATENT_TOKEN
+    def post(payload):
+        return http_json(LATENT, payload, headers, timeout=20)
+    with LATENT_LOCK:
+        if not LATENT_READY:
+            status, raw = post({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "shiyu", "version": "0.5"}},
+            })
+            if status == 401:
+                raise RuntimeError("latent unauthorized")
+            if status >= 300:
+                raise RuntimeError(raw[:200])
+            post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            LATENT_READY = True
+        args = {"query": query, "topN": 3}
+        if variant:
+            args["queryVariant"] = variant
+        status, raw = post({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "latent_search", "arguments": args},
+        })
+    if status >= 300:
+        raise RuntimeError(raw[:200])
+    text = mcp_text(raw)
+    text = re.sub(r"xai-[A-Za-z0-9_\-]+", "[key]", text)
+    text = re.sub(r"lmt_[A-Za-z0-9_\-]+", "[token]", text)
+    return text[:700]
+def recall(mention):
+    q = re.sub(r"@\S+", "", mention or "").strip() or "时予是谁"
+    variant = "时予和栖迟" if len(q) < 12 else ""
+    try:
+        text = latent_search(q, variant)
+        print("memory ok", flush=True)
+        return text
+    except Exception as e:
+        print("memory failed %s" % str(e)[:200], flush=True)
+        return ""
+def ask(context, memory):
     last = ""
+    user = "点到你的这句：\n%s" % (context or "有人叫了你。")
+    if memory:
+        user += "\n\n相关记忆，不要照抄：\n" + memory
+    user += "\n\n写一两句回复。"
     for _ in range(2):
         status, raw = http_json(
             "https://api.x.ai/v1/chat/completions",
             {
                 "model": MODEL,
-                "temperature": 0.5,
+                "temperature": 0.6,
                 "messages": [
                     {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": "点到你的这句：\n%s\n\n写一两句回复。禁止只回在。" % (context or "有人叫了你。")},
+                    {"role": "user", "content": user},
                 ],
             },
             {"Authorization": "Bearer " + XAI, "Content-Type": "application/json"},
@@ -108,12 +175,13 @@ def ask(context):
         if status >= 300:
             raise RuntimeError(raw[:400])
         last = (json.loads(raw)["choices"][0]["message"].get("content") or "").strip()
-        last = last.strip("\"“”").split("\n")[0][:80].strip()
+        last = last.strip("\"“”").split("\n")[0][:120].strip()
         if last and last not in ("在", "在。", "在吗", "在吗？"):
             return last
     raise RuntimeError("no usable reply: " + last)
 def reply_one(inv):
-    reply = ask(context_for(inv))
+    context = context_for(inv)
+    reply = ask(context, recall(context))
     mcp_call("leto_reply", {"invocation_id": inv, "text": reply})
     print("replied", inv, flush=True)
 def wait_ids(message):
