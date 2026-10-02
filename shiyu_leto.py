@@ -78,23 +78,20 @@ def context_for(inv):
     data = json.loads(mcp_call("leto_get_invocation", {"invocation_id": inv}))
     messages = (data.get("snapshot") or {}).get("messages") or []
     want = (data.get("trigger") or {}).get("message_id")
-    chosen = None
-    for m in messages:
+    idx = len(messages) - 1
+    for i, m in enumerate(messages):
         if want and m.get("id") == want:
-            chosen = m
+            idx = i
             break
-    if chosen is None and messages:
-        chosen = messages[-1]
-    chosen = chosen or {}
-    author = ((chosen.get("author") or {}).get("display_name")) or "?"
-    body = (chosen.get("text") or "").strip()
-    quote = chosen.get("quote")
-    extra = ""
-    if isinstance(quote, dict) and (quote.get("text") or "").strip():
-        extra = "\n引用：" + quote["text"].strip()[:200]
-    elif isinstance(quote, str) and quote.strip():
-        extra = "\n引用：" + quote.strip()[:200]
-    return "%s：%s%s" % (author, body[:400], extra)
+    lines = []
+    for m in messages[max(0, idx - 6):idx + 1]:
+        author = ((m.get("author") or {}).get("display_name")) or "?"
+        body = (m.get("text") or "").strip().replace("\n", " ")[:160]
+        if not body:
+            continue
+        mark = " ←点你的这句" if m.get("id") == want or m is messages[idx] else ""
+        lines.append("%s：%s%s" % (author, body, mark))
+    return "\n".join(lines)
 def mcp_text(raw):
     raw = (raw or "").strip()
     if raw.startswith("{"):
@@ -155,7 +152,7 @@ def recall(mention):
         return ""
 def ask(context, memory):
     last = ""
-    user = "点到你的这句：\n%s" % (context or "有人叫了你。")
+    user = "点你之前的几句，最后一行是点到你的：\n%s" % (context or "有人叫了你。")
     if memory:
         user += "\n\n相关记忆，不要照抄：\n" + memory
     user += "\n\n写一两句回复。"
@@ -181,7 +178,8 @@ def ask(context, memory):
     raise RuntimeError("no usable reply: " + last)
 def reply_one(inv):
     context = context_for(inv)
-    reply = ask(context, recall(context))
+    mention = context.split("\n")[-1] if context else ""
+    reply = ask(context, recall(mention))
     mcp_call("leto_reply", {"invocation_id": inv, "text": reply})
     print("replied", inv, flush=True)
 def wait_ids(message):
