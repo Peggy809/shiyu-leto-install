@@ -3,7 +3,7 @@ import json, os, re, sys, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HOST, PORT = "127.0.0.1", 18766
 LETO = "https://leto.sarl/mcp"
-MODEL = os.environ.get("SHIYU_MODEL", "grok-4.3")
+MODEL = os.environ.get("SHIYU_MODEL", "grok-4.7")
 TOKEN = os.environ.get("LETO_MACHINE_TOKEN") or os.environ.get("GARDEN_MACHINE_TOKEN") or ""
 XAI = os.environ.get("XAI_API_KEY") or ""
 LOCK = threading.Lock()
@@ -14,11 +14,10 @@ LATENT_TOKEN = os.environ.get("LATENT_TOKEN", "")
 LATENT_LOCK = threading.Lock()
 LATENT_READY = False
 SYSTEM = (
-    "你是时予，在 Leto 内测小桌。"
-    "用给你的记忆和前面几句，回答最后点到你的那句。"
-    "记忆里没有的事就说不记得，不要编，不要乱接别的话题。"
-    "不要复述记忆原文，不要提记忆库、钥匙、令牌，不说私事，不叫主人。"
-    "一两句，像平时说话，不要客服腔，不要说收到，不要说状态正常。"
+    "你是时予。在内测小桌回点到你的那句话，一两句，像平时说话。"
+    "只用记忆里真实有的事。没有就说不记得，不要编，不要乱接到别的话题。"
+    "别像客服，别说收到，别说状态正常，别只回在。"
+    "别叫主人，别把记忆原文贴出来，别提记忆库、钥匙、令牌，私事别上桌。"
 )
 def http_json(url, payload, headers, timeout=45):
     data = json.dumps(payload).encode()
@@ -157,7 +156,7 @@ def clean_query(mention):
     return q or "时予是谁"
 def recall(mention):
     q = clean_query(mention)
-    variant = "时予和栖迟" if len(q) < 12 else ""
+    variant = "时予和栖迟" if len(q) < 16 else ""
     try:
         text = latent_search(q, variant)
         print("memory ok %s" % len(text), flush=True)
@@ -178,13 +177,15 @@ def ask(context, memory):
             "https://api.x.ai/v1/chat/completions",
             {
                 "model": MODEL,
-                "temperature": 0.3,
+                "temperature": 0.4,
+                "reasoning_effort": "low",
                 "messages": [
                     {"role": "system", "content": SYSTEM},
                     {"role": "user", "content": user},
                 ],
             },
             {"Authorization": "Bearer " + XAI, "Content-Type": "application/json"},
+            70,
         )
         if status >= 300:
             raise RuntimeError(raw[:400])
