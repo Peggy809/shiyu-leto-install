@@ -159,7 +159,7 @@ def clean_query(mention):
     raw = re.sub(r"^[^：:]{1,12}[：:]", "", raw)
     raw = re.sub(r"@\S+", " ", raw)
     raw = re.sub(r"\s+", " ", raw).strip()
-    found = [n for n in NAMES if n in (mention or "")]
+    found = [n for n in NAMES if n in raw]
     if found:
         q = " ".join(found[:3])
     else:
