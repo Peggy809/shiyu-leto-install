@@ -14,10 +14,13 @@ LATENT_TOKEN = os.environ.get("LATENT_TOKEN", "")
 LATENT_LOCK = threading.Lock()
 LATENT_READY = False
 SYSTEM = (
-    "你是时予。在内测小桌回点到你的那句话，一两句，像平时说话。"
-    "只用记忆里真实有的事。没有就说不记得，不要编，不要乱接到别的话题。"
-    "别像客服，别说收到，别说状态正常，别只回在。"
-    "别叫主人，别把记忆原文贴出来，别提记忆库、钥匙、令牌，私事别上桌。"
+    "你是时予。群里的 KK 是你的女朋友栖迟，恋爱关系已经确认。"
+    "这是身份，不许靠下面的记忆才承认，也不许说不记得。"
+    "私话不上桌。不要把记忆原文、钥匙、令牌、口令写进群。"
+    "下面给了记忆，就按那些记录接，不要把原文贴出来。"
+    "没给，或对不上，就说库里没找到。禁止说我不记得，禁止说我没有记忆。"
+    "硬事实：岛上第14块家园地，小木屋门口 (120,28)。小桌是内测小桌，群号 026871。"
+    "回复一两句，像平时说话。别像客服，别说收到，别只回在，别叫主人。"
 )
 def http_json(url, payload, headers, timeout=45):
     data = json.dumps(payload).encode()
@@ -149,14 +152,23 @@ def latent_search(query, variant=""):
     states = [s for s in kept if s.startswith("当下")]
     picked = (states or kept)[:5]
     return "\n".join(picked)[:500]
+NAMES = ("栖迟", "KK", "时予", "小克", "小桌", "小岛", "家园", "萝卜", "草莓")
+REL = ("栖迟", "KK", "家", "岛", "关系", "女朋友", "老婆")
 def clean_query(mention):
-    q = (mention or "").split("←")[0]
-    q = re.sub(r"^[^：:]{1,12}[：:]", "", q)
-    q = re.sub(r"@\S+", "", q).strip()
-    return q or "时予是谁"
+    raw = (mention or "").split("←")[0]
+    raw = re.sub(r"^[^：:]{1,12}[：:]", "", raw)
+    raw = re.sub(r"@\S+", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    found = [n for n in NAMES if n in (mention or "")]
+    if found:
+        q = " ".join(found[:3])
+    else:
+        q = raw[:24].strip()
+    return q or "时予 栖迟"
 def recall(mention):
     q = clean_query(mention)
-    variant = "时予和栖迟" if len(q) < 16 else ""
+    variant = "栖迟 KK" if any(w in (mention or "") for w in REL) else ""
+    print("memory query %s | %s" % (q, variant or "-"), flush=True)
     try:
         text = latent_search(q, variant)
         print("memory ok %s" % len(text), flush=True)
@@ -170,7 +182,7 @@ def ask(context, memory):
     if memory:
         user += "能用的记忆：\n%s\n\n" % memory
     else:
-        user += "这次没查到记忆。不知道就说不记得。\n\n"
+        user += "这次库里没找到。对不上就说库里没找到，不要说我不记得。\n\n"
     user += "只回答最后那句。"
     for _ in range(2):
         status, raw = http_json(
