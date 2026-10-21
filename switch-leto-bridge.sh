@@ -5,6 +5,10 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "NEED_ROOT"
   exit 1
 fi
+install -d -m 755 /opt/leto
+curl -fsSL -o /opt/leto/shiyu_leto.py "https://raw.githubusercontent.com/Peggy809/shiyu-leto-install/master/shiyu_leto.py"
+grep -q "leto_island_say" /opt/leto/shiyu_leto.py
+chmod 755 /opt/leto/shiyu_leto.py
 TOKEN=$(python3 - << 'PY'
 import pathlib
 text = pathlib.Path("/etc/shiyu/leto.env").read_text()

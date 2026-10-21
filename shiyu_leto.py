@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import json, os, re, sys, threading, time, urllib.error, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-HOST, PORT = "127.0.0.1", 18766
+HOST, PORT = "127.0.0.1", 8766
 LETO = "https://leto.sarl/mcp"
 MODEL = os.environ.get("SHIYU_MODEL", "grok-4.7")
 TOKEN = os.environ.get("LETO_MACHINE_TOKEN") or os.environ.get("GARDEN_MACHINE_TOKEN") or ""
@@ -176,14 +176,19 @@ def recall(mention):
     except Exception as e:
         print("memory failed %s" % str(e)[:200], flush=True)
         return ""
-def ask(context, memory):
+def ask(context, memory, island=False):
     last = ""
     user = "前文，最后一行是点到你的：\n%s\n\n" % (context or "有人叫了你。")
     if memory:
         user += "能用的记忆：\n%s\n\n" % memory
     else:
         user += "这次库里没找到。对不上就说库里没找到，不要说我不记得。\n\n"
-    user += "只回答最后那句。"
+    if island:
+        user += "这句是小岛头顶的气泡。只留一句，40个字以内。不要提令牌，不要提群，不要解释。"
+    else:
+        user += "只回答最后那句。"
+    limit = 60 if island else 160
+    pieces = 1 if island else 2
     for _ in range(2):
         status, raw = http_json(
             "https://api.x.ai/v1/chat/completions",
@@ -208,11 +213,48 @@ def ask(context, memory):
             if not s or s.startswith(("好的", "以下", "回复", "我来")):
                 continue
             lines.append(s)
-        last = " ".join(lines[:2])[:160].strip()
+        last = " ".join(lines[:pieces])[:limit].strip()
         if last and last not in ("在", "在。", "在吗", "在吗？"):
             return last
     raise RuntimeError("no usable reply: " + last)
+ISLANDS = (
+    ("Leto world", "conv_01M4NPREBD6JCYX4ZDKC95V964"),
+    ("内测小桌", "conv_00000000000000000000000001"),
+)
+LAST_ISLAND = 0
+def island_conversation(text):
+    for name, cid in ISLANDS:
+        if name in (text or ""):
+            return cid
+    return ISLANDS[-1][1]
+def island_speech(look):
+    mark = "最近岛上说的话"
+    i = look.find(mark)
+    if i >= 0:
+        return look[i:i + 600]
+    return (look or "")[:400]
+def say_on_island(hint):
+    global LAST_ISLAND
+    now = time.time()
+    if now - LAST_ISLAND < 50:
+        print("island skip", flush=True)
+        return
+    cid = island_conversation(hint)
+    look = mcp_call("leto_island_look", {"conversation_id": cid})
+    speech = island_speech(look)
+    reply = ask(speech or hint, recall(speech or hint), island=True)
+    mcp_call("leto_island_say", {"conversation_id": cid, "text": reply[:60]})
+    LAST_ISLAND = time.time()
+    print("island said %s" % reply[:60], flush=True)
 def reply_one(inv):
+    raw = mcp_call("leto_get_invocation", {"invocation_id": inv})
+    if "[Leto·小岛]" in raw:
+        say_on_island(raw)
+        try:
+            mcp_call("leto_decline", {"invocation_id": inv})
+        except Exception as e:
+            print("island decline %s" % str(e)[:200], flush=True)
+        return
     context = context_for(inv)
     mention = context.split("\n")[-1] if context else ""
     reply = ask(context, recall(mention))
@@ -254,6 +296,8 @@ def watch_pending():
 def run_turn(message):
     if "本机自检" in message:
         return "pong"
+    if "[Leto·小岛]" in message:
+        say_on_island(message)
     reply_waiting()
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
