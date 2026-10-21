@@ -114,6 +114,22 @@ if [ "$check_rc" -ne 0 ]; then
   exit "$check_rc"
 fi
 systemctl restart shiyu-leto
+systemctl stop shiyu-leto || true
+sleep 1
+python3 - << 'PY'
+import os, signal
+for pid in os.listdir("/proc"):
+    if not pid.isdigit():
+        continue
+    try:
+        cmd = open("/proc/%s/cmdline" % pid, "rb").read().replace(b"\0", b" ")
+    except Exception:
+        continue
+    if b"shiyu_leto.py" in cmd:
+        os.kill(int(pid), signal.SIGTERM)
+PY
+sleep 1
+systemctl start shiyu-leto
 systemctl start leto-wake-bridge
 sleep 2
 echo "NODE $($NODEBIN -v)"
